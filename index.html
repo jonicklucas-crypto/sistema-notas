@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<title>Sistema NF Profissional</title>
+
+<!-- ✅ XLSX -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- ✅ FIREBASE -->
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+
+<style>
+body { font-family:Arial; margin:0; background:#f4f6f9; }
+.menu { width:220px; height:100vh; position:fixed; background:#2c3e50; color:white; }
+.menu button { width:100%; padding:15px; border:none; background:none; color:white; cursor:pointer; }
+.menu button:hover { background:#1abc9c; }
+.conteudo { margin-left:220px; padding:20px; }
+input { padding:10px; margin:5px 0; width:100%; }
+button { padding:10px; background:#1abc9c; color:white; border:none; cursor:pointer; margin:5px; }
+table { width:100%; border-collapse:collapse; background:white; font-size:12px; }
+th, td { padding:6px; border:1px solid #ddd; white-space:nowrap; }
+
+.cancelada { background:#ffcccc; }
+.entrada { background:#fff3cd; }
+.recebido { background:#d4f4d4; }
+.lancado { background:#c8e4ff; }
+</style>
+</head>
+
+<body>
+
+<div id="loginTela">
+<div style="background:#fff;padding:30px;border-radius:10px;">
+<h2>Login</h2>
+<input id="user" value="admin">
+<input id="pass" type="password" value="123456">
+<button onclick="entrar()">Entrar</button>
+</div>
+</div>
+
+<div id="app" style="display:none;">
+
+<div class="menu">
+<button onclick="tela('notas')">Notas</button>
+<button onclick="tela('receb')">Recebimento</button>
+<button onclick="tela('sap')">SAP</button>
+<button onclick="tela('excel')">Importar Excel</button>
+<button onclick="logout()">Sair</button>
+</div>
+
+<div class="conteudo">
+
+<div id="notas">
+<h2>Notas Fiscais</h2>
+
+<button onclick="salvar()">Salvar</button>
+<button onclick="exportar()">Exportar</button>
+<button onclick="apagar()">Apagar</button>
+
+<!-- ✅ CONTADORES -->
+<div style="margin:10px 0;font-weight:bold;">
+Total: <span id="cTotal">0</span> |
+Canceladas: <span id="cCancel">0</span> |
+Lançadas SAP: <span id="cSap">0</span>
+</div>
+
+<input id="busca" onkeyup="filtrar()" placeholder="Buscar">
+<table id="tabela"></table>
+</div>
+
+<div id="receb" style="display:none;">
+<h2>Recebimento</h2>
+<input id="chaveReceb" oninput="buscarReceb()">
+<input id="numReceb" readonly>
+<input id="razaoReceb" readonly>
+<input id="valorReceb" readonly>
+<input id="pedidoReceb" placeholder="Pedido">
+<button onclick="confirmarReceb()">Confirmar</button>
+<button onclick="estornarReceb()">Estornar</button>
+</div>
+
+<div id="sap" style="display:none;">
+<h2>SAP</h2>
+<input id="chaveSAP" oninput="buscarSAP()">
+<input id="numSAP" readonly>
+<input id="razaoSAP" readonly>
+<input id="valorSAP" readonly>
+<button onclick="confirmarSAP()">Confirmar</button>
+<button onclick="estornarSAP()">Estornar</button>
+</div>
+
+<div id="excel" style="display:none;">
+<h2>Importar Excel</h2>
+<input type="file" id="file">
+<button onclick="importar()">Importar</button>
+</div>
+
+</div>
+</div>
+
+<script>
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCs61LRkdUTqeFv_qJvTb5vc1h8qwI5yYQ",
+  authDomain: "sistemanf.firebaseapp.com",
+  databaseURL: "https://sistemanf-default-rtdb.firebaseio.com",
+  projectId: "sistemanf",
+  storageBucket: "sistemanf.firebasestorage.app",
+  messagingSenderId: "87632051913",
+  appId: "1:87632051913:web:438fc247703c2fb8915718"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+let notas = [];
+
+// ✅ CARREGAR
+function carregar(){
+db.collection("notas").get().then(s=>{
+notas = s.docs.map(d=>d.data());
+render();
+});
+}
+
+function entrar(){
+if(user.value==="admin" && pass.value==="123456"){
+loginTela.style.display="none";
+app.style.display="block";
+carregar();
+}else alert("Senha incorreta");
+}
+
+function logout(){
+app.style.display="none";
+loginTela.style.display="flex";
+}
+
+function tela(t){
+["notas","receb","sap","excel"].forEach(x=>{
+document.getElementById(x).style.display="none";
+});
+document.getElementById(t).style.display="block";
+}
+
+function salvar(){
+let batch = db.batch();
+notas.forEach(n=>{
+batch.set(db.collection("notas").doc(n.chave),n);
+});
+batch.commit().then(()=>alert("✅ Dados salvos"));
+}
+
+// ✅ IMPORTAÇÃO (com chave limpa)
+function importar(){
+let f=file.files[0];
+if(!f) return alert("Selecione");
+
+let r=new FileReader();
+
+r.onload=e=>{
+let wb=XLSX.read(e.target.result,{type:'binary'});
+let data=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+
+let backup=notas;
+let nova=[];
+let importadas=0;
+let duplicadas=0;
+
+data.forEach((l,i)=>{
+
+if(i===0||!l[1]) return;
+
+let chave = String(l[1]).replace(/'/g,"").replace(/"/g,"").trim();
+
+let antigo = backup.find(n=>n.chave===chave);
+
+if(antigo){
+nova.push(antigo);
+duplicadas++;
+}else{
+nova.push({
+uf:l[0],
+chave,
+numero:l[2],
+emissao:l[4],
+razaoEmit:l[7],
+valor:l[15],
+situacao:l[13],
+tipo:l[14],
+recebido:"NAO",
+sap:"NAO"
+});
+importadas++;
+}
+
+});
+
+notas=nova;
+salvar();
+render();
+
+alert(`✅ Importação concluída
+Novas: ${importadas}
+Duplicadas: ${duplicadas}`);
+};
+
+r.readAsBinaryString(f);
+}
+
+// ✅ BUSCAR
+function buscar(c){
+return notas.find(n=>n.chave===c);
+}
+
+// ✅ RECEBIMENTO (SEM PERMITIR DUPLICIDADE)
+function confirmarReceb(){
+
+let n=buscar(chaveReceb.value);
+if(!n) return;
+
+if(n.recebido==="SIM"){
+alert(`Nota ${n.numero} já recebida`);
+return;
+}
+
+let pedido=pedidoReceb.value;
+
+if(!pedido){
+if(!confirm("nota sem pedido, deseja continuar?")) return;
+}
+
+let existente = notas.find(x=>x.pedido===pedido && x.chave!==n.chave);
+
+if(existente){
+if(!confirm(`o pedido encontra-se na nota ${existente.numero}, deseja continuar?`)) return;
+}
+
+n.recebido="SIM";
+n.pedido=pedido;
+
+salvar();render();
+
+alert(`Nota ${n.numero} recebida`);
+}
+
+function estornarReceb(){
+let n=buscar(chaveReceb.value);
+if(!n) return;
+
+n.recebido="NAO";
+
+salvar();render();
+
+alert(`Nota ${n.numero} estornada`);
+}
+
+// ✅ SAP (SEM PERMITIR DUPLICIDADE)
+function confirmarSAP(){
+let n=buscar(chaveSAP.value);
+if(!n) return;
+
+if(n.sap==="SIM"){
+alert(`Nota ${n.numero} já lançada`);
+return;
+}
+
+n.sap="SIM";
+
+salvar();render();
+
+alert(`Nota ${n.numero} lançada`);
+}
+
+function estornarSAP(){
+let n=buscar(chaveSAP.value);
+if(!n) return;
+
+n.sap="NAO";
+
+salvar();render();
+
+alert(`Nota ${n.numero} estornada`);
+}
+
+function buscarReceb(){
+let n=buscar(chaveReceb.value);
+if(n){
+numReceb.value=n.numero||"";
+razaoReceb.value=n.razaoEmit||"";
+valorReceb.value=n.valor||"";
+}
+}
+
+function buscarSAP(){
+let n=buscar(chaveSAP.value);
+if(n){
+numSAP.value=n.numero||"";
+razaoSAP.value=n.razaoEmit||"";
+valorSAP.value=n.valor||"";
+}
+}
+
+function filtrar(){
+let t=busca.value.toLowerCase();
+document.querySelectorAll("#tabela tr").forEach((l,i)=>{
+if(i==0)return;
+l.style.display=l.innerText.toLowerCase().includes(t)?"":"none";
+});
+}
+
+function exportar(){
+let wb=XLSX.utils.table_to_book(tabela);
+XLSX.writeFile(wb,"notas.xlsx");
+}
+
+function apagar(){
+if(confirm("Apagar tudo?")){
+notas=[];
+salvar();
+render();
+}
+}
+
+// ✅ RENDER + CONTADORES
+function render(){
+
+tabela.innerHTML=`<tr>
+<th>UF</th><th>CHAVE</th><th>NUMERO</th>
+<th>RAZAO</th><th>VALOR</th>
+<th>SITUACAO</th><th>TIPO</th>
+<th>EMISSAO</th><th>PEDIDO</th>
+<th>RECEBIDO</th><th>SAP</th>
+</tr>`;
+
+notas.forEach(n=>{
+let cls="";
+if(n.situacao?.includes("CANCELADA")) cls="cancelada";
+else if(n.tipo?.toUpperCase().includes("ENTRADA")) cls="entrada";
+else if(n.sap==="SIM") cls="lancado";
+else if(n.recebido==="SIM") cls="recebido";
+
+tabela.innerHTML+=`
+<tr class="${cls}">
+<td>${n.uf||""}</td>
+<td>${n.chave}</td>
+<td>${n.numero}</td>
+<td>${n.razaoEmit}</td>
+<td>${n.valor}</td>
+<td>${n.situacao}</td>
+<td>${n.tipo}</td>
+<td>${n.emissao||""}</td>
+<td>${n.pedido||""}</td>
+<td>${n.recebido}</td>
+<td>${n.sap}</td>
+</tr>`;
+});
+
+// ✅ CONTADORES
+cTotal.innerText = notas.length;
+cCancel.innerText = notas.filter(n=>n.situacao?.includes("CANCELADA")).length;
+cSap.innerText = notas.filter(n=>n.sap==="SIM").length;
+
+}
+
+</script>
+</body>
+</html>
